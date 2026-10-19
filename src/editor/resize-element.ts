@@ -16,3 +16,10 @@ export const getResizePatch = (
     width,
   }
 }
+
+/** Keeps the bottom edge fixed when a top handle changes the element's height. */
+export const getNorthResizeY = (
+  startY: number,
+  startHeightPercent: number,
+  nextHeightPercent: number,
+): number => startY + startHeightPercent - nextHeightPercent

@@ -1,6 +1,6 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { DRAG_MAX, getDragMaxX, getDragMinX, getDragMinY } from '../editor/drag-bounds'
-import { getResizePatch, type ResizeHandle } from '../editor/resize-element'
+import { getNorthResizeY, getResizePatch, type ResizeHandle } from '../editor/resize-element'
 import { getSpanGhosts } from '../editor/screen-span'
 import { clamp, getBackgroundPatternStyle, getBackgroundStyle } from '../utils'
 import { AiCursorOverlay } from './AiCursorOverlay'
@@ -26,6 +26,19 @@ type Interaction = {
   centerY?: number
   startAngle?: number
   resizeHandle?: ResizeHandle
+  resizeNode?: HTMLElement
+  resizeStartHeightPercent?: number
+  artboardHeightPx?: number
+}
+
+// Text can rewrap and mockups keep an aspect ratio, so the next height is only
+// known after layout. Probe the live node, then let React apply the real width.
+const measureHeightPercent = (node: HTMLElement, widthPercent: number, artboardHeightPx: number) => {
+  const previousWidth = node.style.width
+  node.style.width = `${widthPercent}%`
+  const heightPercent = (node.offsetHeight / artboardHeightPx) * 100
+  node.style.width = previousWidth
+  return heightPercent
 }
 
 type Props = {
@@ -125,7 +138,20 @@ export const EditorCanvas = ({
       centerX,
       centerY,
       startAngle: Math.atan2(event.clientY - centerY, event.clientX - centerX) * (180 / Math.PI),
-      ...(resizeHandle ? { resizeHandle } : {}),
+      ...(resizeHandle
+        ? {
+            resizeHandle,
+            artboardHeightPx: artboardNode.clientHeight,
+            ...(itemNode instanceof HTMLElement
+              ? {
+                  resizeNode: itemNode,
+                  resizeStartHeightPercent: artboardNode.clientHeight > 0
+                    ? (itemNode.offsetHeight / artboardNode.clientHeight) * 100
+                    : 0,
+                }
+              : {}),
+          }
+        : {}),
     }
     onCheckpoint()
     setIsInteracting(true)
@@ -168,9 +194,20 @@ export const EditorCanvas = ({
     if (current.type === 'resize') {
       const handle = current.resizeHandle
       if (!handle) return
+      const patch = getResizePatch(current.element, dx, handle)
+      const { resizeNode, resizeStartHeightPercent, artboardHeightPx } = current
+      const nextHeightPercent = handle.startsWith('n')
+        && resizeNode
+        && resizeStartHeightPercent !== undefined
+        && artboardHeightPx !== undefined
+        && artboardHeightPx > 0
+        ? measureHeightPercent(resizeNode, patch.width, artboardHeightPx)
+        : undefined
       onUpdateElements(current.slideId, [{
         id: current.element.id,
-        patch: getResizePatch(current.element, dx, handle),
+        patch: nextHeightPercent === undefined || resizeStartHeightPercent === undefined
+          ? patch
+          : { ...patch, y: getNorthResizeY(current.element.y, resizeStartHeightPercent, nextHeightPercent) },
       }])
       return
     }

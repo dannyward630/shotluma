@@ -26,6 +26,7 @@ export default defineConfig({
         'src/editor/drag-bounds.ts',
         'src/editor/element-utils.ts',
         'src/editor/nudge.ts',
+        'src/editor/resize-element.ts',
         'src/editor/screen-span.ts',
         'src/editor/slide-operations.ts',
         'src/mockups/perspective.ts',
