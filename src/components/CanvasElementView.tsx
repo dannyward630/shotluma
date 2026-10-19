@@ -13,6 +13,7 @@ import { hexToRgba, richTextHasFormatting, richTextToPlain, sanitizeRichText } f
 import { IconGraphic } from './IconGraphic'
 import { Bold, Home01, Italic, LockKeyhole, MoreHorizontal, Search01, Signal, Underline, UserCircle, Wifi01, BatteryFull, Add01 } from './icons'
 import { ShapeGraphic } from './ShapeGraphic'
+import type { ResizeHandle } from '../editor/resize-element'
 import type { CanvasElement } from '../types'
 
 const FakeScreen = ({ theme }: { theme: Extract<CanvasElement, { type: 'device' }>['screenTheme'] }) => (
@@ -178,7 +179,7 @@ type CanvasItemProps = {
   exporting: boolean
   onSelect: (additive: boolean) => void
   onBeginDrag: (event: ReactPointerEvent, element: CanvasElement) => void
-  onBeginResize: (event: ReactPointerEvent, element: CanvasElement) => void
+  onBeginResize: (event: ReactPointerEvent, element: CanvasElement, handle: ResizeHandle) => void
   onBeginRotate: (event: ReactPointerEvent, element: CanvasElement) => void
   onCommitText: (patch: { text: string; html?: string }) => void
 }
@@ -353,10 +354,10 @@ export const CanvasItem = ({ element, selected, showTransformHandles, exporting,
             : showTransformHandles
               ? (
                   <>
-                    <button className="resize-handle resize-handle--nw" onPointerDown={(e) => onBeginResize(e, element)} tabIndex={-1} />
-                    <button className="resize-handle resize-handle--ne" onPointerDown={(e) => onBeginResize(e, element)} tabIndex={-1} />
-                    <button className="resize-handle resize-handle--sw" onPointerDown={(e) => onBeginResize(e, element)} tabIndex={-1} />
-                    <button className="resize-handle resize-handle--se" onPointerDown={(e) => onBeginResize(e, element)} tabIndex={-1} />
+                    <button className="resize-handle resize-handle--nw" onPointerDown={(e) => onBeginResize(e, element, 'nw')} tabIndex={-1} />
+                    <button className="resize-handle resize-handle--ne" onPointerDown={(e) => onBeginResize(e, element, 'ne')} tabIndex={-1} />
+                    <button className="resize-handle resize-handle--sw" onPointerDown={(e) => onBeginResize(e, element, 'sw')} tabIndex={-1} />
+                    <button className="resize-handle resize-handle--se" onPointerDown={(e) => onBeginResize(e, element, 'se')} tabIndex={-1} />
                     <button className="rotate-handle" onPointerDown={(e) => onBeginRotate(e, element)} tabIndex={-1}><span /></button>
                   </>
                 )

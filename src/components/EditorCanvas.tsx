@@ -1,5 +1,6 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { DRAG_MAX, getDragMaxX, getDragMinX, getDragMinY } from '../editor/drag-bounds'
+import { getResizePatch, type ResizeHandle } from '../editor/resize-element'
 import { getSpanGhosts } from '../editor/screen-span'
 import { clamp, getBackgroundPatternStyle, getBackgroundStyle } from '../utils'
 import { AiCursorOverlay } from './AiCursorOverlay'
@@ -24,6 +25,7 @@ type Interaction = {
   centerX?: number
   centerY?: number
   startAngle?: number
+  resizeHandle?: ResizeHandle
 }
 
 type Props = {
@@ -73,7 +75,7 @@ export const EditorCanvas = ({
   const [isInteracting, setIsInteracting] = useState(false)
   const [snapGuides, setSnapGuides] = useState<{ slideId: string; vertical: boolean; horizontal: boolean } | null>(null)
 
-  const begin = (type: Interaction['type'], event: ReactPointerEvent, slideId: string, element: CanvasElement) => {
+  const begin = (type: Interaction['type'], event: ReactPointerEvent, slideId: string, element: CanvasElement, resizeHandle?: ResizeHandle) => {
     event.preventDefault()
     event.stopPropagation()
     const artboardNode = event.currentTarget.closest('.artboard-export')
@@ -123,6 +125,7 @@ export const EditorCanvas = ({
       centerX,
       centerY,
       startAngle: Math.atan2(event.clientY - centerY, event.clientX - centerX) * (180 / Math.PI),
+      ...(resizeHandle ? { resizeHandle } : {}),
     }
     onCheckpoint()
     setIsInteracting(true)
@@ -163,9 +166,11 @@ export const EditorCanvas = ({
     }
 
     if (current.type === 'resize') {
+      const handle = current.resizeHandle
+      if (!handle) return
       onUpdateElements(current.slideId, [{
         id: current.element.id,
-        patch: { width: clamp(current.element.width + dx, 8, 140) },
+        patch: getResizePatch(current.element, dx, handle),
       }])
       return
     }
@@ -282,7 +287,7 @@ export const EditorCanvas = ({
                                   exporting={exporting}
                                   onSelect={(additive) => onSelectElement(element.id, slide.id, additive)}
                                   onBeginDrag={(event, item) => begin('drag', event, slide.id, item)}
-                                  onBeginResize={(event, item) => begin('resize', event, slide.id, item)}
+                                  onBeginResize={(event, item, handle) => begin('resize', event, slide.id, item, handle)}
                                   onBeginRotate={(event, item) => begin('rotate', event, slide.id, item)}
                                   onCommitText={(patch) => onCommitText(slide.id, element.id, patch)}
                                 />
