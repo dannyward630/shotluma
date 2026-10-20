@@ -44,12 +44,15 @@ vi.mock('./share-link', () => ({
 type Deferred<T> = {
   promise: Promise<T>
   resolve: (value: T) => void
+  reject: (reason: unknown) => void
 }
 
 function makeDeferred<T>(): Deferred<T> {
   let resolvePromise: ((value: T) => void) | undefined
-  const promise = new Promise<T>((resolve) => {
+  let rejectPromise: ((reason: unknown) => void) | undefined
+  const promise = new Promise<T>((resolve, reject) => {
     resolvePromise = resolve
+    rejectPromise = reject
   })
 
   return {
@@ -57,6 +60,10 @@ function makeDeferred<T>(): Deferred<T> {
     resolve: (value) => {
       if (!resolvePromise) throw new Error('Deferred promise was not initialized')
       resolvePromise(value)
+    },
+    reject: (reason) => {
+      if (!rejectPromise) throw new Error('Deferred promise was not initialized')
+      rejectPromise(reason)
     },
   }
 }
@@ -195,7 +202,7 @@ describe('project workspace persistence', () => {
     const otherProjectReplaced = workspace.waitForReplacement(otherProject.id)
     await act(async () => {
       workspace.getWorkspace().openProject(otherProject.id)
-      expect(loadProject).toHaveBeenCalledWith(otherProject.id)
+      await vi.waitFor(() => expect(loadProject).toHaveBeenCalledWith(otherProject.id))
       await otherProjectReplaced
     })
 
@@ -228,6 +235,68 @@ describe('project workspace persistence', () => {
     expect(setActiveProjectId).not.toHaveBeenCalledWith(otherProject.id)
     expect(workspace.getWorkspace().currentProjectId).toBe(activeProject.id)
     expect(toastMessages.at(-1)).toContain('Another tab saved a newer project version')
+  })
+
+  it('keeps the active project when a queued save conflicts during a transition', async () => {
+    const activeProject = makeProject('active', 'Active project', 100)
+    const otherProject = makeProject('other', 'Other project', 200)
+    const firstSave = makeDeferred<undefined>()
+    const secondSave = makeDeferred<undefined>()
+    const firstSaveStarted = makeDeferred<undefined>()
+    const secondSaveStarted = makeDeferred<undefined>()
+    const workspace = await mountWorkspace(activeProject, [activeProject, otherProject])
+    let activeSaveCount = 0
+
+    vi.mocked(loadProject).mockResolvedValue(otherProject)
+    vi.mocked(saveProject).mockImplementation((project) => {
+      if (project.id !== activeProject.id) return Promise.resolve()
+      activeSaveCount += 1
+      if (activeSaveCount === 1) {
+        firstSaveStarted.resolve(undefined)
+        return firstSave.promise
+      }
+      if (activeSaveCount === 2) {
+        secondSaveStarted.resolve(undefined)
+        return secondSave.promise
+      }
+      return Promise.resolve()
+    })
+    vi.mocked(loadProject).mockClear()
+    vi.mocked(setActiveProjectId).mockClear()
+
+    await act(async () => {
+      workspace.getWorkspace().openProject(otherProject.id)
+      await firstSaveStarted.promise
+    })
+
+    await act(async () => {
+      workspace.getWorkspace().setProjectName('Edited while saving')
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(350)
+    })
+
+    await act(async () => {
+      firstSave.resolve(undefined)
+      await secondSaveStarted.promise
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(loadProject).not.toHaveBeenCalledWith(otherProject.id)
+
+    await act(async () => {
+      secondSave.reject(new ProjectSaveConflictError())
+      await vi.waitFor(() => {
+        expect(toastMessages.at(-1)).toContain(
+          'Another tab saved a newer project version',
+        )
+      })
+    })
+
+    expect(loadProject).not.toHaveBeenCalledWith(otherProject.id)
+    expect(setActiveProjectId).not.toHaveBeenCalledWith(otherProject.id)
+    expect(workspace.getWorkspace().currentProjectId).toBe(activeProject.id)
   })
 
   it('keeps queued save versions attached to their project across a switch', async () => {
@@ -277,7 +346,14 @@ describe('project workspace persistence', () => {
 
     await act(async () => {
       firstSave.resolve(undefined)
-      await Promise.all([secondSaveStarted.promise, otherProjectLoadStarted.promise])
+      await secondSaveStarted.promise
+    })
+
+    expect(loadProject).not.toHaveBeenCalledWith(otherProject.id)
+
+    await act(async () => {
+      secondSave.resolve(undefined)
+      await otherProjectLoadStarted.promise
     })
 
     await act(async () => {
@@ -287,7 +363,6 @@ describe('project workspace persistence', () => {
 
     let saved = false
     await act(async () => {
-      secondSave.resolve(undefined)
       saved = await workspace.getWorkspace().saveCurrentProject()
     })
 

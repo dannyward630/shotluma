@@ -143,6 +143,7 @@ export function useProjectWorkspace({
   const saveQueueRef = useRef<Promise<void>>(Promise.resolve())
   const changeRevisionRef = useRef(0)
   const saveAttemptRef = useRef(0)
+  const saveFailureRevisionRef = useRef(0)
   const skipNextAutoSaveRef = useRef(false)
   const projectTransitionRef = useRef(false)
 
@@ -298,6 +299,7 @@ export function useProjectWorkspace({
       return true
     } catch (error) {
       const isActiveProject = currentProjectIdRef.current === snapshot.id
+      if (isActiveProject) saveFailureRevisionRef.current += 1
       if (isActiveProject && error instanceof ProjectSaveConflictError) {
         setSaveStatus('error')
         setToast(PROJECT_SAVE_CONFLICT_MESSAGE)
@@ -317,6 +319,7 @@ export function useProjectWorkspace({
     errorMessage: string,
   ) => {
     if (projectTransitionRef.current) return
+    const saveFailureRevision = saveFailureRevisionRef.current
     const conflictWasAlreadyReported = saveConflictRef.current
     const saved = conflictWasAlreadyReported || await saveCurrentProject()
     if (!saved) {
@@ -326,6 +329,13 @@ export function useProjectWorkspace({
 
     projectTransitionRef.current = true
     try {
+      await saveQueueRef.current
+      if (saveFailureRevisionRef.current !== saveFailureRevision) {
+        setSaveStatus('error')
+        setToast(saveConflictRef.current ? PROJECT_SAVE_CONFLICT_MESSAGE : 'Couldn’t save locally')
+        return
+      }
+
       let project = await operation()
       const interrupted = consumeInterruptedGeneration(project)
       if (interrupted) {
