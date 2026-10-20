@@ -317,9 +317,10 @@ export function useProjectWorkspace({
     errorMessage: string,
   ) => {
     if (projectTransitionRef.current) return
-    const saved = saveConflictRef.current || await saveCurrentProject()
-    if (!saved && !saveConflictRef.current) {
-      setToast(errorMessage)
+    const conflictWasAlreadyReported = saveConflictRef.current
+    const saved = conflictWasAlreadyReported || await saveCurrentProject()
+    if (!saved) {
+      if (!saveConflictRef.current) setToast(errorMessage)
       return
     }
 

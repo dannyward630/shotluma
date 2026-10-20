@@ -81,7 +81,10 @@ const initialSlides: Slide[] = []
 const initialUploads: UploadAsset[] = []
 const setSlides: Dispatch<SetStateAction<Slide[]>> = () => undefined
 const setUploads: Dispatch<SetStateAction<UploadAsset[]>> = () => undefined
-const setToast: Dispatch<SetStateAction<string | null>> = () => undefined
+const toastMessages: (string | null)[] = []
+const setToast: Dispatch<SetStateAction<string | null>> = (message) => {
+  toastMessages.push(typeof message === 'function' ? message(null) : message)
+}
 const isAiRunActive = () => false
 
 type ProjectWorkspace = ReturnType<typeof useProjectWorkspace>
@@ -163,6 +166,7 @@ beforeEach(() => {
   vi.mocked(setActiveProjectId).mockReset()
   vi.mocked(saveProject).mockResolvedValue(undefined)
   vi.mocked(loadProject).mockResolvedValue(null)
+  toastMessages.length = 0
   window.history.replaceState(null, '', '/')
 })
 
@@ -196,6 +200,34 @@ describe('project workspace persistence', () => {
     })
 
     expect(workspace.getWorkspace().currentProjectId).toBe(otherProject.id)
+  })
+
+  it('keeps the conflict warning when a transition save discovers a conflict', async () => {
+    const activeProject = makeProject('active', 'Active project', 100)
+    const otherProject = makeProject('other', 'Other project', 200)
+    const workspace = await mountWorkspace(activeProject, [activeProject, otherProject])
+    vi.mocked(loadProject).mockResolvedValue(otherProject)
+    vi.mocked(saveProject).mockRejectedValueOnce(new ProjectSaveConflictError())
+    vi.mocked(loadProject).mockClear()
+    vi.mocked(setActiveProjectId).mockClear()
+
+    await act(async () => {
+      workspace.getWorkspace().openProject(otherProject.id)
+      await vi.waitFor(() => {
+        expect(
+          toastMessages.some((message) =>
+            message?.includes('Another tab saved a newer project version'),
+          ),
+        ).toBe(true)
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(loadProject).not.toHaveBeenCalledWith(otherProject.id)
+    expect(setActiveProjectId).not.toHaveBeenCalledWith(otherProject.id)
+    expect(workspace.getWorkspace().currentProjectId).toBe(activeProject.id)
+    expect(toastMessages.at(-1)).toContain('Another tab saved a newer project version')
   })
 
   it('keeps queued save versions attached to their project across a switch', async () => {
