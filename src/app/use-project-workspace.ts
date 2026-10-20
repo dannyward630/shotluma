@@ -131,7 +131,7 @@ export function useProjectWorkspace({
   const [currentProjectId, setCurrentProjectId] = useState('current')
   const currentProjectIdRef = useRef('current')
   const currentProjectCreatedAtRef = useRef(0)
-  const savedAtRef = useRef(0)
+  const savedAtByProjectRef = useRef(new Map<string, number>())
   const saveConflictRef = useRef(false)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
@@ -162,7 +162,7 @@ export function useProjectWorkspace({
   const replaceProject = useCallback((project: PersistedProject) => {
     currentProjectIdRef.current = project.id
     currentProjectCreatedAtRef.current = project.createdAt
-    savedAtRef.current = project.savedAt
+    savedAtByProjectRef.current.set(project.id, project.savedAt)
     saveConflictRef.current = false
     projectNameRef.current = project.projectName
     slidesRef.current = project.slides
@@ -266,40 +266,45 @@ export function useProjectWorkspace({
     const saveRequest = saveQueueRef.current
       .catch(() => undefined)
       .then(async () => {
-        if (saveConflictRef.current) throw new ProjectSaveConflictError()
-        const savedAt = Math.max(Date.now(), savedAtRef.current + 1)
+        if (currentProjectIdRef.current === snapshot.id && saveConflictRef.current) {
+          throw new ProjectSaveConflictError()
+        }
+        const expectedSavedAt = savedAtByProjectRef.current.get(snapshot.id) ?? 0
+        const savedAt = Math.max(Date.now(), expectedSavedAt + 1)
         const committedSnapshot: PersistedProject = { ...snapshot, savedAt }
         try {
-          await saveProject(committedSnapshot, savedAtRef.current)
+          await saveProject(committedSnapshot, expectedSavedAt)
         } catch (error) {
-          if (error instanceof ProjectSaveConflictError) {
+          if (error instanceof ProjectSaveConflictError && currentProjectIdRef.current === snapshot.id) {
             saveConflictRef.current = true
           }
           throw error
         }
-        savedAtRef.current = savedAt
+        savedAtByProjectRef.current.set(snapshot.id, savedAt)
         return committedSnapshot
       })
     saveQueueRef.current = saveRequest.then(() => undefined, () => undefined)
 
     try {
       const committedSnapshot = await saveRequest
+      const isActiveProject = currentProjectIdRef.current === snapshot.id
       removeLegacyProject()
-      if (attempt === saveAttemptRef.current && revision === changeRevisionRef.current) {
+      if (isActiveProject && attempt === saveAttemptRef.current && revision === changeRevisionRef.current) {
         setSaveStatus('saved')
         setLastSavedAt(committedSnapshot.savedAt)
       }
       setProjects((current) => upsertProjectSummary(current, committedSnapshot))
-      if (showConfirmation) setToast('Project saved locally')
+      if (showConfirmation && isActiveProject) setToast('Project saved locally')
       return true
     } catch (error) {
-      if (error instanceof ProjectSaveConflictError) {
+      const isActiveProject = currentProjectIdRef.current === snapshot.id
+      if (isActiveProject && error instanceof ProjectSaveConflictError) {
         setSaveStatus('error')
         setToast(PROJECT_SAVE_CONFLICT_MESSAGE)
-      } else if (attempt === saveAttemptRef.current && revision === changeRevisionRef.current) {
+      } else if (isActiveProject && attempt === saveAttemptRef.current && revision === changeRevisionRef.current) {
         setSaveStatus('error')
       }
-      if (!(error instanceof ProjectSaveConflictError) && showConfirmation) {
+      if (isActiveProject && !(error instanceof ProjectSaveConflictError) && showConfirmation) {
         setToast('Couldn’t save locally')
       }
       return false
@@ -312,9 +317,9 @@ export function useProjectWorkspace({
     errorMessage: string,
   ) => {
     if (projectTransitionRef.current) return
-    const saved = await saveCurrentProject()
-    if (!saved) {
-      setToast(saveConflictRef.current ? PROJECT_SAVE_CONFLICT_MESSAGE : errorMessage)
+    const saved = saveConflictRef.current || await saveCurrentProject()
+    if (!saved && !saveConflictRef.current) {
+      setToast(errorMessage)
       return
     }
 
@@ -400,10 +405,12 @@ export function useProjectWorkspace({
       const nextProject = await loadProject(nextSummary.id)
       if (!nextProject) throw new Error('Replacement project not found')
 
-      await deleteProject(currentProjectIdRef.current)
+      const deletedProjectId = currentProjectIdRef.current
+      await deleteProject(deletedProjectId)
       await setActiveProjectId(nextProject.id)
       skipNextAutoSaveRef.current = true
       replaceProject(nextProject)
+      savedAtByProjectRef.current.delete(deletedProjectId)
       setProjects((current) => current.filter((project) => project.id !== currentProjectIdRef.current))
       setSaveStatus('saved')
       setDeleteDialogOpen(false)
