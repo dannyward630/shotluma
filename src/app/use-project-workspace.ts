@@ -8,6 +8,7 @@ import {
   removeLegacyProject,
   saveProject,
   setActiveProjectId,
+  ProjectSaveConflictError,
   type PersistedProject,
   type ProjectSummary,
 } from '../persistence'
@@ -43,6 +44,8 @@ type ProjectWorkspaceOptions = {
 
 const INTERRUPTED_GENERATION_MESSAGE =
   'The last AI generation was interrupted — finished screens were kept'
+const PROJECT_SAVE_CONFLICT_MESSAGE =
+  'Another tab saved a newer project version. This tab’s save was rejected; reload to get the latest version.'
 
 const makeNewProject = (
   projectName: string,
@@ -128,6 +131,8 @@ export function useProjectWorkspace({
   const [currentProjectId, setCurrentProjectId] = useState('current')
   const currentProjectIdRef = useRef('current')
   const currentProjectCreatedAtRef = useRef(0)
+  const savedAtRef = useRef(0)
+  const saveConflictRef = useRef(false)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
   const [deletingProject, setDeletingProject] = useState(false)
@@ -157,6 +162,8 @@ export function useProjectWorkspace({
   const replaceProject = useCallback((project: PersistedProject) => {
     currentProjectIdRef.current = project.id
     currentProjectCreatedAtRef.current = project.createdAt
+    savedAtRef.current = project.savedAt
+    saveConflictRef.current = false
     projectNameRef.current = project.projectName
     slidesRef.current = project.slides
     uploadsRef.current = project.uploads
@@ -188,7 +195,9 @@ export function useProjectWorkspace({
         const interrupted = consumeInterruptedGeneration(project)
         if (interrupted) {
           project = interrupted
-          await saveProject(project)
+          const expectedSavedAt = project.savedAt
+          project = { ...project, savedAt: Math.max(Date.now(), expectedSavedAt + 1) }
+          await saveProject(project, expectedSavedAt)
         }
         await setActiveProjectId(project.id)
         if (isCancelled()) return
@@ -208,13 +217,16 @@ export function useProjectWorkspace({
         removeLegacyProject()
         skipNextAutoSaveRef.current = true
         setSaveStatus('saved')
-      } catch {
+      } catch (error) {
         if (!isCancelled()) {
           // The share fragment is already consumed, so a hydration failure
           // must still tell the user their shared link went nowhere.
           if (sharedImportPending) {
             settleSharedImport()
             setToast('Couldn’t open the shared project link')
+          } else if (error instanceof ProjectSaveConflictError) {
+            saveConflictRef.current = true
+            setToast(PROJECT_SAVE_CONFLICT_MESSAGE)
           }
           setSaveStatus('error')
         }
@@ -234,41 +246,62 @@ export function useProjectWorkspace({
 
   const saveCurrentProject = useCallback(async (showConfirmation = false) => {
     if (!persistenceReadyRef.current || projectTransitionRef.current) return false
+    if (saveConflictRef.current) {
+      if (showConfirmation) setToast(PROJECT_SAVE_CONFLICT_MESSAGE)
+      return false
+    }
 
-    const savedAt = Date.now()
     const revision = changeRevisionRef.current
     const attempt = ++saveAttemptRef.current
-    const snapshot: PersistedProject = {
+    const snapshot: Omit<PersistedProject, 'savedAt'> = {
       id: currentProjectIdRef.current,
       projectName: projectNameRef.current.trim() || DEFAULT_PROJECT_NAME,
       slides: slidesRef.current,
       uploads: uploadsRef.current,
       createdAt: currentProjectCreatedAtRef.current,
-      savedAt,
       ...(isAiRunActive() ? { interruptedGeneration: true as const } : {}),
     }
 
     setSaveStatus('saving')
     const saveRequest = saveQueueRef.current
       .catch(() => undefined)
-      .then(() => saveProject(snapshot))
-    saveQueueRef.current = saveRequest
+      .then(async () => {
+        if (saveConflictRef.current) throw new ProjectSaveConflictError()
+        const savedAt = Math.max(Date.now(), savedAtRef.current + 1)
+        const committedSnapshot: PersistedProject = { ...snapshot, savedAt }
+        try {
+          await saveProject(committedSnapshot, savedAtRef.current)
+        } catch (error) {
+          if (error instanceof ProjectSaveConflictError) {
+            saveConflictRef.current = true
+          }
+          throw error
+        }
+        savedAtRef.current = savedAt
+        return committedSnapshot
+      })
+    saveQueueRef.current = saveRequest.then(() => undefined, () => undefined)
 
     try {
-      await saveRequest
+      const committedSnapshot = await saveRequest
       removeLegacyProject()
       if (attempt === saveAttemptRef.current && revision === changeRevisionRef.current) {
         setSaveStatus('saved')
-        setLastSavedAt(savedAt)
+        setLastSavedAt(committedSnapshot.savedAt)
       }
-      setProjects((current) => upsertProjectSummary(current, snapshot))
+      setProjects((current) => upsertProjectSummary(current, committedSnapshot))
       if (showConfirmation) setToast('Project saved locally')
       return true
-    } catch {
-      if (attempt === saveAttemptRef.current && revision === changeRevisionRef.current) {
+    } catch (error) {
+      if (error instanceof ProjectSaveConflictError) {
+        setSaveStatus('error')
+        setToast(PROJECT_SAVE_CONFLICT_MESSAGE)
+      } else if (attempt === saveAttemptRef.current && revision === changeRevisionRef.current) {
         setSaveStatus('error')
       }
-      if (showConfirmation) setToast('Couldn’t save locally')
+      if (!(error instanceof ProjectSaveConflictError) && showConfirmation) {
+        setToast('Couldn’t save locally')
+      }
       return false
     }
   }, [isAiRunActive, setToast, slidesRef, uploadsRef])
@@ -281,7 +314,7 @@ export function useProjectWorkspace({
     if (projectTransitionRef.current) return
     const saved = await saveCurrentProject()
     if (!saved) {
-      setToast(errorMessage)
+      setToast(saveConflictRef.current ? PROJECT_SAVE_CONFLICT_MESSAGE : errorMessage)
       return
     }
 
@@ -291,7 +324,9 @@ export function useProjectWorkspace({
       const interrupted = consumeInterruptedGeneration(project)
       if (interrupted) {
         project = interrupted
-        await saveProject(project)
+        const expectedSavedAt = project.savedAt
+        project = { ...project, savedAt: Math.max(Date.now(), expectedSavedAt + 1) }
+        await saveProject(project, expectedSavedAt)
       }
       await setActiveProjectId(project.id)
       skipNextAutoSaveRef.current = true
@@ -299,9 +334,9 @@ export function useProjectWorkspace({
       setProjects((current) => upsertProjectSummary(current, project))
       setSaveStatus('saved')
       setToast(interrupted ? INTERRUPTED_GENERATION_MESSAGE : successMessage)
-    } catch {
+    } catch (error) {
       setSaveStatus('error')
-      setToast(errorMessage)
+      setToast(error instanceof ProjectSaveConflictError ? PROJECT_SAVE_CONFLICT_MESSAGE : errorMessage)
     } finally {
       projectTransitionRef.current = false
     }
